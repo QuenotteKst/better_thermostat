@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Ouverture maximale de la vanne"
+      },
+      "target_offset": {
+        "name": "Décalage de la température cible"
       }
     },
     "switch": {

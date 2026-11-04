@@ -20,6 +20,7 @@ import math
 from time import monotonic
 from typing import Literal, Protocol, TypedDict
 
+from ..helpers import regulation_target_for
 from .types import CalibrationHost
 
 _LOGGER = logging.getLogger(__name__)
@@ -677,7 +678,7 @@ def build_pid_key(self: CalibrationHost, entity_id: str) -> str:
         PID key string
     """
     try:
-        tcur = self.bt_target_temp
+        tcur = regulation_target_for(self)
         bucket_tag = (
             format_bucket(round_to_bucket(tcur))
             if isinstance(tcur, (int, float))

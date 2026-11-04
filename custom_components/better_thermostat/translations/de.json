@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Maximale Ventilöffnung"
+      },
+      "target_offset": {
+        "name": "Zieltemperatur-Offset"
       }
     },
     "switch": {

@@ -47,6 +47,7 @@ from .utils.const import (
 from .utils.helpers import (
     TrvNamedEntity,
     async_normalize_bt_entity_ids,
+    convert_to_float,
     convert_to_float_celsius,
     current_trv_name,
 )
@@ -127,6 +128,8 @@ async def async_setup_entry(
                 "cool": True,
             }
 
+    numbers.append(BetterThermostatTargetOffsetNumber(bt_climate))
+
     # Create PID numbers for each TRV if PID calibration is enabled
     if hasattr(bt_climate, "all_trvs"):
         has_multiple_trvs = len(bt_climate.all_trvs) > 1
@@ -201,6 +204,79 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _ACTIVE_PID_NUMBERS.pop(entry_id, None)
 
     return True
+
+
+class BetterThermostatTargetOffsetNumber(NumberEntity, RestoreEntity):
+    """Live, restorable offset added to the internal heating target."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = NumberDeviceClass.TEMPERATURE_DELTA
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_native_min_value = -10.0
+    _attr_native_max_value = 10.0
+    _attr_native_step = 0.1
+    _attr_mode = NumberMode.BOX
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "target_offset"
+
+    def __init__(self, bt_climate):
+        """Initialize the target offset number."""
+        self._bt_climate = bt_climate
+        self._attr_unique_id = f"{bt_climate.unique_id}_target_offset"
+
+    @property
+    def device_info(self):
+        """Return the parent thermostat's device info."""
+        return self._bt_climate.device_info
+
+    @property
+    def native_value(self) -> float:
+        """Return the internal target offset in Celsius."""
+        return self._bt_climate.target_offset
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last offset value after restart."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is None or last_state.state in (None, "unknown", "unavailable"):
+            return
+        restored = convert_to_float(
+            last_state.state,
+            self._bt_climate.device_name,
+            "BetterThermostatTargetOffsetNumber.async_added_to_hass",
+        )
+        if restored is not None:
+            await self._set_offset(restored)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Update the offset and immediately request a new control cycle."""
+        if not _is_usable_setting(self._bt_climate, value, "target offset"):
+            return
+        if not -10.0 <= value <= 10.0:
+            _LOGGER.warning(
+                "Better Thermostat %s: target offset %s is outside -10..10 °C",
+                self._bt_climate.device_name,
+                value,
+            )
+            return
+        await self._set_offset(value)
+
+    async def _set_offset(self, value: float) -> None:
+        """Apply a valid offset and queue regulation if it changed."""
+        if not math.isfinite(value) or not -10.0 <= value <= 10.0:
+            return
+        changed = self._bt_climate.target_offset != value
+        self._bt_climate.target_offset = value
+        if self._bt_climate.cooler_entity_id is not None:
+            self._bt_climate._enforce_cool_above_heat(regardless_of_hvac_mode=True)
+        self.async_write_ha_state()
+        self._bt_climate.async_write_ha_state()
+        if (
+            changed
+            and not self._bt_climate.startup_running
+            and self._bt_climate.bt_hvac_mode != HVACMode.OFF
+        ):
+            await self._bt_climate.control_queue_task.put(self._bt_climate)
 
 
 class BetterThermostatPresetNumber(NumberEntity, RestoreEntity):

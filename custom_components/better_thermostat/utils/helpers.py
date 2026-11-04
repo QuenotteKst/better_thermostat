@@ -60,6 +60,17 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+def regulation_target_for(bt: Any) -> float | None:
+    """Return the effective heating target, defaulting absent test offsets to zero."""
+    target = getattr(bt, "bt_target_temp", None)
+    if not isinstance(target, (int, float)):
+        return None
+    offset = getattr(bt, "target_offset", 0.0)
+    if not isinstance(offset, (int, float)) or not math.isfinite(offset):
+        offset = 0.0
+    return float(target) + float(offset)
+
+
 def entry_settings(entry: ConfigEntry) -> dict[str, Any]:
     """Return the configuration of ``entry``, wherever it is stored.
 
@@ -804,7 +815,10 @@ def heating_power_valve_position(self, entity_id):
     | 0.4       | 0.3232  | 0.6227  | 1.0000   |
     | 0.5       | 0.3992  | 0.7691  | 1.0000   |
     """
-    _temp_diff = float(float(self.bt_target_temp) - float(self.cur_temp))
+    _target_temp = regulation_target_for(self)
+    if _target_temp is None:
+        return 0.0
+    _temp_diff = float(_target_temp - float(self.cur_temp))
 
     # Guard against negative temp_diff (room warmer than target)
     # This can occur in TRV override edge case when temperature rises
@@ -812,7 +826,7 @@ def heating_power_valve_position(self, entity_id):
     if _temp_diff <= 0:
         _LOGGER.debug(
             f"better_thermostat {self.device_name}: {entity_id} "
-            f"cur_temp >= target_temp ({self.cur_temp} >= {self.bt_target_temp}), "
+            f"cur_temp >= regulation_target_temp ({self.cur_temp} >= {_target_temp}), "
             f"setting valve to 0%"
         )
         return 0.0

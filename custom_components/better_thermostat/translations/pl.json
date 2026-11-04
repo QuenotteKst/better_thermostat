@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Maksymalne otwarcie zaworu"
+      },
+      "target_offset": {
+        "name": "Przesunięcie temperatury docelowej"
       }
     },
     "switch": {

@@ -54,6 +54,7 @@ from custom_components.better_thermostat.utils.helpers import (
     published_in_whole_fahrenheit,
     read_bound_celsius,
     read_setpoint_celsius,
+    regulation_target_for,
     resolve_inbound_setpoint,
     resolve_state_change_event,
     room_mode_intent,
@@ -855,7 +856,7 @@ async def trigger_trv_change(
                         self.device_name,
                         entity_id,
                         _new_heating_setpoint,
-                        self.bt_target_temp,
+                        regulation_target_for(self),
                         _adopted_cooling_setpoint,
                     )
                 _LOGGER.debug(
@@ -879,10 +880,22 @@ async def trigger_trv_change(
                 # channel alone, so a setpoint that would cross the cooling
                 # target is lowered to clear it and the cooling target stays
                 # where the user put it.
-                _adopted_heating_setpoint = self._clamp_inbound_heat_target(
+                _adopted_effective_setpoint = self._clamp_inbound_heat_target(
                     _new_heating_setpoint
                 )
-                if _adopted_heating_setpoint != _new_heating_setpoint:
+                _effective_target = regulation_target_for(self)
+                _target_offset = (
+                    _effective_target - self.bt_target_temp
+                    if _effective_target is not None
+                    else 0.0
+                )
+                _adopted_heating_setpoint = _adopted_effective_setpoint
+                if _target_offset:
+                    _adopted_heating_setpoint = self._bound_target_to_range(
+                        _adopted_effective_setpoint - _target_offset
+                    )
+                _adopted_effective_setpoint = _adopted_heating_setpoint + _target_offset
+                if _adopted_effective_setpoint != _new_heating_setpoint:
                     # A user turning the knob up reports every intermediate
                     # setpoint, so this is annunciated at info level: the target
                     # is being honoured as far as the cooling channel allows,
@@ -894,7 +907,7 @@ async def trigger_trv_change(
                         entity_id,
                         _new_heating_setpoint,
                         self.bt_target_cooltemp,
-                        _adopted_heating_setpoint,
+                        _adopted_effective_setpoint,
                     )
                 _LOGGER.debug(
                     "better_thermostat %s: TRV %s decoded TRV target temp changed from %s to %s",
@@ -1059,19 +1072,19 @@ def convert_outbound_states(self, entity_id, hvac_mode) -> dict | None:
                 self.device_name,
             )
             # Fallback: do not apply local calibration, only set the target temperature
-            _new_heating_setpoint = self.bt_target_temp
+            _new_heating_setpoint = regulation_target_for(self)
             _new_local_calibration = None
 
         elif _calibration_type == CalibrationType.LOCAL_BASED:
             _new_local_calibration = calculate_calibration_local(self, entity_id)
-            _new_heating_setpoint = self.bt_target_temp
+            _new_heating_setpoint = regulation_target_for(self)
 
         elif _calibration_type in (
             CalibrationType.TARGET_TEMP_BASED,
             CalibrationType.DIRECT_VALVE_BASED,
         ):
             if _calibration_mode == CalibrationMode.NO_CALIBRATION:
-                _new_heating_setpoint = self.bt_target_temp
+                _new_heating_setpoint = regulation_target_for(self)
             else:
                 _new_heating_setpoint = calculate_calibration_setpoint(self, entity_id)
             _new_local_calibration = None
@@ -1083,7 +1096,7 @@ def convert_outbound_states(self, entity_id, hvac_mode) -> dict | None:
                 self.device_name,
                 _calibration_type,
             )
-            _new_heating_setpoint = self.bt_target_temp
+            _new_heating_setpoint = regulation_target_for(self)
             _new_local_calibration = None
 
         # System mode handling - applies to ALL calibration modes including fallback

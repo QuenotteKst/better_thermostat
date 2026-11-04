@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Μέγιστο άνοιγμα βαλβίδας"
+      },
+      "target_offset": {
+        "name": "Μετατόπιση θερμοκρασίας στόχου"
       }
     },
     "switch": {

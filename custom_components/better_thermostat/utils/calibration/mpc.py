@@ -11,6 +11,7 @@ import random
 from time import time
 from typing import Any
 
+from ..helpers import regulation_target_for
 from .types import CalibrationHost
 
 _LOGGER = logging.getLogger(__name__)
@@ -380,7 +381,7 @@ def build_mpc_key(bt: CalibrationHost, entity_id: str) -> str:
     """
 
     try:
-        target = bt.bt_target_temp
+        target = regulation_target_for(bt)
         bucket = (
             f"t{round(float(target) * 2.0) / 2.0:.1f}"
             if isinstance(target, (int, float))
@@ -401,7 +402,7 @@ def build_mpc_group_key(bt: CalibrationHost) -> str:
     """
 
     try:
-        target = bt.bt_target_temp
+        target = regulation_target_for(bt)
         bucket = (
             f"t{round(float(target) * 2.0) / 2.0:.1f}"
             if isinstance(target, (int, float))

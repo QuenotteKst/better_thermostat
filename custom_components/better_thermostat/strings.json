@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Valve Max Opening"
+      },
+      "target_offset": {
+        "name": "Target Offset"
       }
     },
     "switch": {

@@ -55,6 +55,7 @@ from custom_components.better_thermostat.utils.helpers import (
     normalize_step,
     on_cooler_grid,
     read_setpoint_celsius,
+    regulation_target_for,
     setpoint_echo_window,
     state_temperature_unit,
     supports_single_target_temperature,
@@ -116,8 +117,8 @@ def _is_boost_heating_active(self) -> bool:
     return (
         self.preset_mode == PRESET_BOOST
         and self.cur_temp is not None
-        and self.bt_target_temp is not None
-        and self.cur_temp < self.bt_target_temp
+        and regulation_target_for(self) is not None
+        and self.cur_temp < regulation_target_for(self)
     )
 
 
@@ -285,8 +286,8 @@ class _FailedCycleRun:
 
 
 def _user_intent(self) -> tuple[Any, ...]:
-    """Return the room targets a user sets, as the failure pacing compares them."""
-    return (self.bt_target_temp, self.bt_target_cooltemp, self.bt_hvac_mode)
+    """Return effective room targets and mode for failed-cycle pacing."""
+    return (regulation_target_for(self), self.bt_target_cooltemp, self.bt_hvac_mode)
 
 
 async def _requeue_failed_cycle(self, delay_s: float) -> None:
@@ -676,7 +677,7 @@ def _locked_device_moved(self, entity_id, trv, state) -> bool:
 def _held_report_control_inputs(self, trv) -> tuple:
     """Return what a report read at cycle end can move that a cycle acts on."""
     return (
-        self.bt_target_temp,
+        regulation_target_for(self),
         self.bt_target_cooltemp,
         self.bt_hvac_mode,
         trv.hvac_mode,
@@ -975,10 +976,11 @@ async def control_cooler(self):
     if (
         _write_range
         and desired_temp is not None
-        and isinstance(self.bt_target_temp, (int, float))
+        and isinstance(regulation_target_for(self), (int, float))
     ):
         _low_to_set = min(
-            on_cooler_grid(self, cooler_state, float(self.bt_target_temp)), desired_temp
+            on_cooler_grid(self, cooler_state, float(regulation_target_for(self))),
+            desired_temp,
         )
 
     if any(
@@ -987,7 +989,7 @@ async def control_cooler(self):
             self.cur_temp,
             self.bt_target_cooltemp,
             self.tolerance,
-            self.bt_target_temp,
+            regulation_target_for(self),
         )
     ):
         _LOGGER.debug(
@@ -999,7 +1001,7 @@ async def control_cooler(self):
             self.cur_temp,
             self.bt_target_cooltemp,
             self.tolerance,
-            self.bt_target_temp,
+            regulation_target_for(self),
         )
         desired_mode = HVACMode.OFF
     elif self.bt_hvac_mode == HVACMode.OFF:
@@ -1045,7 +1047,7 @@ async def control_cooler(self):
             _previously_cooling,
             min_band=COOLER_MODE_HYSTERESIS_K,
         )
-        if _cool_wanted and self.cur_temp > self.bt_target_temp:
+        if _cool_wanted and self.cur_temp > regulation_target_for(self):
             desired_mode = HVACMode.COOL
         else:
             desired_mode = HVACMode.OFF

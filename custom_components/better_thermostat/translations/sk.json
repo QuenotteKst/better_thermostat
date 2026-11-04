@@ -432,6 +432,9 @@
       },
       "valve_max_opening_no_trv": {
         "name": "Maximálne otvorenie ventilu"
+      },
+      "target_offset": {
+        "name": "Posun cieľovej teploty"
       }
     },
     "switch": {

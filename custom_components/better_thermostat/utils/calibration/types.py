@@ -14,6 +14,7 @@ class CalibrationHost(Protocol):
     """Minimal BetterThermostat surface used to build calibration state keys."""
 
     bt_target_temp: float | None
+    target_offset: float
 
     @property
     def unique_id(self) -> str | None:

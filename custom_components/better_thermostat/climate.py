@@ -175,6 +175,7 @@ from .utils.helpers import (
     normalize_hvac_mode,
     normalize_step,
     read_bound_celsius,
+    regulation_target_for,
     reported_setpoint_step_celsius,
     resolve_inbound_setpoint,
     room_mode_intent,
@@ -712,6 +713,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         self._unit = unit
         self._device_class = device_class
         self._state_class = state_class
+        self.target_offset = 0.0
         self._hvac_list = [HVACMode.HEAT, HVACMode.OFF]
         self.map_on_hvac_mode = HVACMode.HEAT
         self.next_valve_maintenance = dt_util.now() + timedelta(
@@ -3076,7 +3078,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             self.cur_temp,
             current_action,
             dt_util.utcnow(),
-            target_temp=self.bt_target_temp,
+            target_temp=regulation_target_for(self),
             outdoor_temp=outdoor_temp,
         )
 
@@ -3354,11 +3356,15 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         self, previous_action: HVACAction | None, tol: float
     ) -> bool:
         """Apply hysteresis so heating restarts only below target - tolerance."""
-        if self.bt_target_temp is None or self.cur_temp is None:
+        target = regulation_target_for(self)
+        if target is None or self.cur_temp is None:
             return False
-        return should_heat_with_tolerance(
-            self.cur_temp, self.bt_target_temp, tol, previous_action
-        )
+        return should_heat_with_tolerance(self.cur_temp, target, tol, previous_action)
+
+    @property
+    def regulation_target_temp(self) -> float | None:
+        """Return the heating target after applying the internal-only offset."""
+        return regulation_target_for(self)
 
     def _build_trv_snapshots(self) -> list[TrvSnapshot]:
         """Build TrvSnapshot list from real_trvs with hass state fallback."""
@@ -3425,7 +3431,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         return compute_hvac_action(
             hysteresis=self._hysteresis,
             cur_temp=self.cur_temp,
-            target_temp=self.bt_target_temp,
+            target_temp=regulation_target_for(self),
             cool_target=self.bt_target_cooltemp,
             hvac_mode=self.hvac_mode,
             bt_hvac_mode=self.bt_hvac_mode,
@@ -3668,26 +3674,27 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             return
         if (
             self.bt_target_cooltemp is None
-            or self.bt_target_temp is None
-            or self.bt_target_cooltemp > self.bt_target_temp
+            or regulation_target_for(self) is None
+            or self.bt_target_cooltemp > regulation_target_for(self)
         ):
             return
         step = normalize_step(self.bt_target_temp_step)
-        adjusted = self.bt_target_temp + step
+        _heat_target = regulation_target_for(self)
+        adjusted = _heat_target + step
         maximum = self.bt_max_temp
-        if maximum is not None and maximum >= self.bt_target_temp:
+        if maximum is not None and maximum >= _heat_target:
             adjusted = min(adjusted, maximum)
         if adjusted == self.bt_target_cooltemp:
             # The maximum and the heating target coincide and the cooling target
             # already rests on them, so the bump has nowhere to land.
             return
-        if adjusted > self.bt_target_temp:
+        if adjusted > _heat_target:
             _LOGGER.warning(
                 "better_thermostat %s: cooling target %.2f adjusted to %.2f to stay above heating target %.2f",
                 self.device_name,
                 self.bt_target_cooltemp,
                 adjusted,
-                self.bt_target_temp,
+                _heat_target,
             )
         else:
             _LOGGER.warning(
@@ -3719,19 +3726,21 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         if (
             self.hvac_mode != HVACMode.HEAT_COOL
             or self.bt_target_cooltemp is None
-            or self.bt_target_temp is None
-            or self.bt_target_temp < self.bt_target_cooltemp
+            or regulation_target_for(self) is None
+            or regulation_target_for(self) < self.bt_target_cooltemp
         ):
             return
         step = normalize_step(self.bt_target_temp_step)
-        adjusted = self.bt_target_cooltemp - step
+        _heat_target = regulation_target_for(self)
+        _target_offset = _heat_target - self.bt_target_temp
+        adjusted = self.bt_target_cooltemp - step - _target_offset
         if self.bt_min_temp is not None:
             adjusted = max(adjusted, self.bt_min_temp)
         if adjusted == self.bt_target_temp:
             # The minimum pins the drop on the heating target itself, so it has
             # nowhere to land.
             return
-        if adjusted < self.bt_target_cooltemp:
+        if adjusted + _target_offset < self.bt_target_cooltemp:
             _LOGGER.warning(
                 "better_thermostat %s: heating target %.2f adjusted to %.2f to stay below cooling target %.2f",
                 self.device_name,
@@ -3830,10 +3839,11 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
                 onto the floor the heating target and the configured maximum
                 set
         """
-        if self.cooler_entity_id is None or self.bt_target_temp is None:
+        _heat_target = regulation_target_for(self)
+        if self.cooler_entity_id is None or _heat_target is None:
             return value
         step = normalize_step(self.bt_target_temp_step)
-        floor = self.bt_target_temp + step
+        floor = _heat_target + step
         if self.bt_max_temp is not None:
             floor = min(floor, self.bt_max_temp)
         return max(value, floor)

@@ -54,6 +54,7 @@ from custom_components.better_thermostat.utils.helpers import (
     heating_power_valve_position,
     normalize_calibration_mode,
     normalize_step,
+    regulation_target_for,
     round_by_step,
     rounding,
 )
@@ -280,7 +281,8 @@ def _compute_mpc_balance(self, entity_id: str):
     if trv_state is None:
         return None, False
 
-    if self.bt_target_temp is None or self.cur_temp is None:
+    _target_temp = regulation_target_for(self)
+    if _target_temp is None or self.cur_temp is None:
         trv_state.calibration_balance = None
         return None, False
 
@@ -337,7 +339,7 @@ def _compute_mpc_balance(self, entity_id: str):
         mpc_output, mpc_state = compute_mpc(
             MpcInput(
                 key=mpc_key,
-                target_temp_C=self.bt_target_temp,
+                target_temp_C=_target_temp,
                 current_temp_C=mpc_current_temp,
                 filtered_temp_C=mpc_filtered_temp,
                 trv_temp_C=trv_state.current_temperature,
@@ -438,7 +440,8 @@ def _compute_mpc_v2_balance(self, entity_id: str):
     if trv_state is None:
         return None, False
 
-    if self.bt_target_temp is None or self.cur_temp is None:
+    _target_temp = regulation_target_for(self)
+    if _target_temp is None or self.cur_temp is None:
         trv_state.calibration_balance = None
         return None, False
 
@@ -488,7 +491,7 @@ def _compute_mpc_v2_balance(self, entity_id: str):
         mpc_output, mpc_v2_state = compute_mpc_v2(
             MpcV2Input(
                 key=mpc_key,
-                target_temp_C=self.bt_target_temp,
+                target_temp_C=_target_temp,
                 current_temp_C=self.cur_temp,
                 trv_temp_C=trv_state.current_temperature,
                 window_open=self.contact_open,
@@ -568,7 +571,8 @@ def _compute_tpi_balance(self, entity_id: str):
     if trv_state is None:
         return None, False
 
-    if self.bt_target_temp is None or self.cur_temp is None:
+    _target_temp = regulation_target_for(self)
+    if _target_temp is None or self.cur_temp is None:
         trv_state.calibration_balance = None
         return None, False
 
@@ -592,7 +596,7 @@ def _compute_tpi_balance(self, entity_id: str):
             TpiInput(
                 key=key,
                 current_temp_C=self.cur_temp,
-                target_temp_C=self.bt_target_temp,
+                target_temp_C=_target_temp,
                 outdoor_temp_C=_get_current_outdoor_temp(self),
                 window_open=self.contact_open,
                 heating_allowed=True,
@@ -637,7 +641,8 @@ def _compute_pid_balance(self, entity_id: str):
     if trv_state is None:
         return None, False
 
-    if self.bt_target_temp is None or self.cur_temp is None:
+    _target_temp = regulation_target_for(self)
+    if _target_temp is None or self.cur_temp is None:
         trv_state.calibration_balance = None
         return None, False
 
@@ -691,7 +696,7 @@ def _compute_pid_balance(self, entity_id: str):
     try:
         percent, debug, pid_state = compute_pid(
             params,
-            self.bt_target_temp,
+            _target_temp,
             self.cur_temp,
             trv_state.current_temperature,
             self.temp_slope,
@@ -773,11 +778,11 @@ def calculate_calibration_local(self, entity_id) -> float | None:
     if _calibration_mode == CalibrationMode.DEFAULT:
         if self.cur_temp is None:
             return None
-    elif self.cur_temp is None or self.bt_target_temp is None:
+    elif self.cur_temp is None or regulation_target_for(self) is None:
         return None
 
     _cur_external_temp = self.cur_temp
-    _cur_target_temp = self.bt_target_temp
+    _cur_target_temp = regulation_target_for(self)
 
     if _calibration_mode != CalibrationMode.DEFAULT:
         # Add tolerance check – use asymmetric band [target - tol, target]
@@ -1164,12 +1169,12 @@ def calculate_calibration_setpoint(self, entity_id) -> float | None:
     if _calibration_mode is None:
         _calibration_mode = DEFAULT_CALIBRATION_MODE
 
-    if self.cur_temp is None or self.bt_target_temp is None:
+    if self.cur_temp is None or regulation_target_for(self) is None:
         return None
 
     # Add tolerance check
     _cur_external_temp = float(self.cur_temp)
-    _cur_target_temp = float(self.bt_target_temp)
+    _cur_target_temp = float(regulation_target_for(self))
 
     _cur_trv_temp_s = self.real_trvs[entity_id].current_temperature
     _cur_trv_temp = _convert_to_float(_cur_trv_temp_s)
