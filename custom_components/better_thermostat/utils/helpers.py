@@ -71,6 +71,17 @@ def regulation_target_for(bt: Any) -> float | None:
     return float(target) + float(offset)
 
 
+def is_processing_paused(bt: Any) -> bool:
+    """Return whether the configured pause entity is active or unavailable."""
+    entity_id = getattr(bt, "pause_sensor_entity_id", None)
+    if not isinstance(entity_id, str) or not entity_id:
+        return False
+    hass = getattr(bt, "hass", None)
+    states = getattr(hass, "states", None)
+    state = states.get(entity_id) if states is not None else None
+    return state is None or str(state.state).lower() not in ("off", "false", "closed")
+
+
 def entry_settings(entry: ConfigEntry) -> dict[str, Any]:
     """Return the configuration of ``entry``, wherever it is stored.
 

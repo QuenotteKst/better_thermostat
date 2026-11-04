@@ -217,6 +217,35 @@ def _delegate_driven_self(**trv_overrides):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_cooler", [False, True])
+async def test_pause_sends_off_without_changing_room_intent(shared_cooler):
+    mock_self = _make_mock_self(
+        trv_state=HVACMode.COOL if shared_cooler else HVACMode.HEAT,
+        trv_attrs={"temperature": 20.0},
+        pause_sensor_entity_id="binary_sensor.pause",
+        cooler_entity_id="climate.trv1" if shared_cooler else None,
+        bt_hvac_mode=HVACMode.HEAT_COOL if shared_cooler else HVACMode.HEAT,
+    )
+    original_get = mock_self.hass.states.get.return_value
+    mock_self.hass.states.get.side_effect = lambda entity_id: (
+        State("binary_sensor.pause", "on")
+        if entity_id == "binary_sensor.pause"
+        else original_get
+    )
+    with (
+        _setpoint_cycle(22.0),
+        patch(_PATCHES["set_hvac_mode"], new=AsyncMock()) as set_mode,
+    ):
+        await control_trv(mock_self, "climate.trv1")
+
+    set_mode.assert_awaited_once_with(mock_self, "climate.trv1", HVACMode.OFF)
+    assert mock_self.bt_hvac_mode == (
+        HVACMode.HEAT_COOL if shared_cooler else HVACMode.HEAT
+    )
+    assert mock_self.bt_target_temp == 22.0
+
+
 class TestEchoSetpointsAcrossWrites:
     """The writes since the last confirmation stay known as possible echoes."""
 

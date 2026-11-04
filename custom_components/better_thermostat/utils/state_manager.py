@@ -618,6 +618,49 @@ class StateManager:
             self._dirty = True
         return self._state.mpc[key]
 
+    def suspend_controllers(self) -> None:
+        """Discard partial observations without discarding learned parameters."""
+        for state in self._state.pid.values():
+            state.pid_last_time = 0.0
+            state.pid_last_meas = None
+            state.pid_last_error = None
+            state.previous_abs_error = None
+            state.last_abs_error = None
+            state.last_delta_sign = None
+            state.last_error_sign = None
+            state.last_output_change_ts = 0.0
+            state.ema_slope = None
+        for state in self._state.mpc.values():
+            state.last_percent = None
+            state.last_update_ts = 0.0
+            state.last_time = 0.0
+            state.last_temp = None
+            state.last_trv_temp = None
+            state.last_trv_temp_ts = 0.0
+            state.last_learn_time = None
+            state.last_learn_temp = None
+            state.last_residual_time = None
+            state.last_room_temp_C = None
+            state.last_room_temp_ts = 0.0
+            state.last_integration_ts = 0.0
+            state.u_integral = 0.0
+            state.time_integral = 0.0
+            state.virtual_temp = None
+            state.virtual_temp_ts = 0.0
+            state.last_sensor_temp_C = None
+            state.ema_slope = None
+            state.recent_errors.clear()
+            state.consecutive_insufficient_heat = 0
+            state.is_calibration_active = False
+            state.regime_boost_active = False
+            state.dead_zone_hits = 0
+        for state in self._state.tpi.values():
+            state.last_update_ts = 0.0
+        for state in self._mpc_v2_live.values():
+            if state.controller is not None:
+                state.controller.suspend()
+        self._dirty = True
+
     def set_mpc(self, key: str, mpc: MpcState) -> None:
         """Set MPC state for a key and mark dirty."""
         self._state.mpc[key] = mpc

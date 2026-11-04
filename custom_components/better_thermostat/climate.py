@@ -136,6 +136,7 @@ from .utils.const import (
     CONF_PRESETS,
     CONF_SENSOR,
     CONF_SENSOR_DOOR,
+    CONF_SENSOR_PAUSE,
     CONF_SENSOR_WINDOW,
     CONF_TARGET_TEMP_MAX,
     CONF_TARGET_TEMP_MIN,
@@ -170,6 +171,7 @@ from .utils.helpers import (
     find_battery_entity,
     get_device_model,
     get_hvac_bt_mode,
+    is_processing_paused,
     is_reasonable_temperature,
     member_counts_as_off,
     normalize_hvac_mode,
@@ -342,6 +344,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entry.entry_id,
         device_class="better_thermostat",
         state_class="better_thermostat_state",
+        pause_sensor_entity_id=settings.get(CONF_SENSOR_PAUSE, None),
     )
     hass.data[DOMAIN][entry.entry_id]["climate"] = bt_entity
     async_normalize_bt_entity_ids(hass, entry, Platform.CLIMATE)
@@ -578,6 +581,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         unique_id,
         device_class,
         state_class,
+        pause_sensor_entity_id=None,
     ):
         """Initialize the thermostat.
 
@@ -634,6 +638,8 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             Device class of the climate entity.
         state_class : str | None
             State class of the climate entity.
+        pause_sensor_entity_id : str | None
+            Optional binary signal whose active state suspends regulation.
         """
         self.device_name = name
         self.model = model
@@ -642,6 +648,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         self.all_trvs = heater_entity_id
         self.sensor_entity_id = sensor_entity_id
         self.humidity_sensor_entity_id = humidity_sensor_entity_id
+        self.pause_sensor_entity_id = pause_sensor_entity_id or None
         self.cooler_entity_id = cooler_entity_id
         try:
             self.min_cooler_resend_interval_s: float = max(
@@ -1461,6 +1468,24 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         await self._trigger_contact_change(
             event, self.door_id, trigger_door_change, "door"
         )
+
+    async def _trigger_pause_change(self, event):
+        """Queue a control cycle when the pause signal changes."""
+        if event is not None:
+            self.async_set_context(event.context)
+        paused = is_processing_paused(self)
+        if paused or getattr(self, "_pause_active", False):
+            self._heating_tracker.start_temp = None
+            self._heating_tracker.start_ts = None
+            self._heating_tracker.end_temp = None
+            self._heating_tracker.end_ts = None
+            self._heating_tracker._prev_action = None
+            if self.state_mgr is not None:
+                self.state_mgr.suspend_controllers()
+        self._pause_active = paused
+        self.async_write_ha_state()
+        if not self.control_queue_task.full():
+            self.control_queue_task.put_nowait(self)
 
     async def _trigger_cooler_change(self, event):
         await check_and_update_degraded_mode(self)
@@ -2733,6 +2758,13 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
                     self.hass, [self.door_id], self._trigger_door_change
                 )
             )
+        if isinstance(getattr(self, "pause_sensor_entity_id", None), str):
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, [self.pause_sensor_entity_id], self._trigger_pause_change
+                )
+            )
+            await self._trigger_pause_change(None)
         if self.cooler_entity_id is not None:
             _shared_entity_id = dual_role_entity_id(self)
             if _shared_entity_id is None:
@@ -2860,7 +2892,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         # within hours, so postponing terminates. OFF is deliberately not a
         # reason to skip: a valve left shut over a heating-off summer is the
         # one that seizes, which is what the exercise exists to prevent.
-        if self.contact_open:
+        if self.contact_open or is_processing_paused(self):
             # postpone by an hour to avoid hammering
             self.next_valve_maintenance = now + timedelta(hours=1)
             _LOGGER.debug(
@@ -2897,7 +2929,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         ignore_trv_states, control_queue) around the pure maintenance
         logic in ``utils.valve_maintenance``.
         """
-        if self.in_maintenance:
+        if self.in_maintenance or is_processing_paused(self):
             return
         self.in_maintenance = True
         # Suppress control loop briefly to prevent interference during maintenance
@@ -3062,7 +3094,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
 
         Delegates to :class:`HeatingPowerTracker` and handles HA side-effects.
         """
-        if self.cur_temp is None:
+        if self.cur_temp is None or is_processing_paused(self):
             return
 
         # Lazy init of target range bounds
@@ -3100,6 +3132,14 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             return
 
         current_action = self._compute_hvac_action()
+        cooler_entity_id = getattr(self, "cooler_entity_id", None)
+        if isinstance(cooler_entity_id, str):
+            cooler_state = self.hass.states.get(cooler_entity_id)
+            if cooler_state is not None and (
+                cooler_state.state == HVACMode.COOL
+                or cooler_state.attributes.get("hvac_action") == HVACAction.COOLING
+            ):
+                current_action = HVACAction.COOLING
 
         result = self._loss_tracker.update(
             self.cur_temp,
@@ -3142,6 +3182,11 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         return bool(self.window_open) or bool(self.door_open)
 
     @property
+    def processing_paused(self) -> bool:
+        """Return whether the configured signal currently pauses regulation."""
+        return is_processing_paused(self)
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the device specific state attributes.
 
@@ -3151,6 +3196,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
                 Attribute dictionary for the extra device specific state attributes.
         """
         dev_specific = {
+            "processing_paused": is_processing_paused(self),
             ATTR_STATE_WINDOW_OPEN: self.window_open,
             ATTR_STATE_DOOR_OPEN: self.door_open,
             ATTR_STATE_CALL_FOR_HEAT: self.call_for_heat,
@@ -3348,6 +3394,10 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
         here bridges the gap until the first commit and is cached so
         repeated state reads do not rebuild it.
         """
+        if is_processing_paused(self):
+            return (
+                HVACAction.OFF if self.bt_hvac_mode == HVACMode.OFF else HVACAction.IDLE
+            )
         if self.attr_hvac_action is None:
             self.attr_hvac_action = self._compute_hvac_action_pure().action
         return self.attr_hvac_action
@@ -3435,7 +3485,7 @@ class BetterThermostat(ClimateEntity, RestoreEntity, ABC):
             cool_target=self.bt_target_cooltemp,
             hvac_mode=self.hvac_mode,
             bt_hvac_mode=self.bt_hvac_mode,
-            window_open=self.contact_open,
+            window_open=self.contact_open or is_processing_paused(self),
             tolerance=self.tolerance or 0.0,
             ignore_states=self.ignore_states,
             trv_snapshots=self._build_trv_snapshots(),

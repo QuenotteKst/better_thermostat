@@ -87,6 +87,7 @@ def thermostat(reported_states):
     bt.cooler_entity_id = None
     bt.context = MagicMock()  # unique context so != event.context
     bt.async_write_ha_state = MagicMock()
+    bt._spawn_owned.side_effect = lambda coroutine, **kwargs: coroutine.close()
     bt.calculate_heating_power = AsyncMock()
     bt.calculate_heat_loss = AsyncMock()
     bt.all_trvs = [{"advanced": {CONF_HOMEMATICIP: False}}]

@@ -11,7 +11,7 @@ devices when hvac_mode is OFF. Then handle_window_open returns None instead of H
 when window closes, causing the control logic to not restore heating.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from homeassistant.components.climate import HVACMode
 import pytest
@@ -95,6 +95,26 @@ class TestConvertOutboundStatesNoOffMode:
         # system_mode should be HEAT (or mapped equivalent)
         # Note: might be None if device has no system mode support
         assert result.get("temperature") == 21.0
+
+    def test_pause_uses_minimum_without_running_calibration(self, mock_bt_instance):
+        """Pause closes no-off TRVs without advancing calibration state."""
+        from custom_components.better_thermostat.events.trv import (
+            convert_outbound_states,
+        )
+
+        mock_bt_instance.pause_sensor_entity_id = "binary_sensor.pause"
+        mock_bt_instance.hass.states.get.return_value.state = "on"
+        with patch(
+            "custom_components.better_thermostat.events.trv.calculate_calibration_setpoint"
+        ) as calculate_calibration:
+            result = convert_outbound_states(
+                mock_bt_instance, "climate.test_trv", HVACMode.OFF
+            )
+
+        assert result is not None
+        assert result["temperature"] == 5.0
+        assert result["system_mode"] is None
+        calculate_calibration.assert_not_called()
 
 
 class TestTrvStateUpdateBug:

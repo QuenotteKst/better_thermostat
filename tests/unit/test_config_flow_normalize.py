@@ -19,6 +19,7 @@ from custom_components.better_thermostat.utils.const import (
     CONF_HEATER,
     CONF_SENSOR,
     CONF_SENSOR_DOOR,
+    CONF_SENSOR_PAUSE,
 )
 
 
@@ -121,6 +122,25 @@ def test_door_sensor_removed_when_key_absent_from_input():
     }
     normalized = _normalize_user_submission(user_input, mode="options", base=base)
     assert normalized[CONF_SENSOR_DOOR] is None
+
+
+def test_pause_sensor_removed_when_key_absent_from_input():
+    """Clearing the optional pause sensor drops its stored entity id."""
+    base = {
+        CONF_NAME: "Living Room",
+        CONF_HEATER: ["climate.trv"],
+        CONF_SENSOR: "sensor.temp",
+        CONF_SENSOR_PAUSE: "binary_sensor.pause",
+    }
+    user_input = {
+        CONF_NAME: "Living Room",
+        CONF_HEATER: ["climate.trv"],
+        CONF_SENSOR: "sensor.temp",
+    }
+
+    normalized = _normalize_user_submission(user_input, mode="options", base=base)
+
+    assert normalized[CONF_SENSOR_PAUSE] is None
 
 
 def test_door_timeouts_normalized_from_duration_dicts():

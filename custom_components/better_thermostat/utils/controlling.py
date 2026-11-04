@@ -51,6 +51,7 @@ from custom_components.better_thermostat.utils.helpers import (
     device_offers_mode,
     dual_role_entity_id,
     get_current_set_temperatures,
+    is_processing_paused,
     matches_any_setpoint,
     normalize_step,
     on_cooler_grid,
@@ -115,7 +116,8 @@ def _is_boost_heating_active(self) -> bool:
     is below target temperature.
     """
     return (
-        self.preset_mode == PRESET_BOOST
+        not is_processing_paused(self)
+        and self.preset_mode == PRESET_BOOST
         and self.cur_temp is not None
         and regulation_target_for(self) is not None
         and self.cur_temp < regulation_target_for(self)
@@ -156,7 +158,11 @@ def _get_valve_control(
         return None, None
 
     if hvac_mode == HVACMode.OFF:
-        if calibration_mode in _VALVE_BALANCE_MODES or _is_boost_heating_active(self):
+        if (
+            is_processing_paused(self)
+            or calibration_mode in _VALVE_BALANCE_MODES
+            or _is_boost_heating_active(self)
+        ):
             return {"valve_percent": 0, "apply_valve": True}, "hvac_off"
         return None, None
 
@@ -729,7 +735,8 @@ async def control_queue(self):
 
                         # Calculate heating power once per cycle
                         try:
-                            await self.calculate_heating_power()
+                            if not is_processing_paused(self):
+                                await self.calculate_heating_power()
                         except Exception:
                             _LOGGER.exception(
                                 "better_thermostat %s: ERROR calculating heating power",
@@ -1004,6 +1011,8 @@ async def control_cooler(self):
             regulation_target_for(self),
         )
         desired_mode = HVACMode.OFF
+    elif is_processing_paused(self):
+        desired_mode = HVACMode.OFF
     elif self.bt_hvac_mode == HVACMode.OFF:
         desired_mode = HVACMode.OFF
     elif self.contact_open:
@@ -1180,9 +1189,9 @@ async def control_cooler(self):
     # would only overwrite whatever the user turned its own dial to. Nothing
     # is attempted, so the send cache records nothing either, and the channel
     # resumes on the cycle the contact shuts.
-    if should_send_temp and self.contact_open:
+    if should_send_temp and (self.contact_open or is_processing_paused(self)):
         _LOGGER.debug(
-            "better_thermostat %s: cooler %s suppressed by an open contact, "
+            "better_thermostat %s: cooler %s suppressed by an open contact or pause, "
             "skipping set_temperature",
             self.device_name,
             self.cooler_entity_id,
@@ -1367,8 +1376,11 @@ async def control_trv(self, heater_entity_id=None):
                 self, _trv, "controlling()"
             )
 
+            _control_mode = (
+                HVACMode.OFF if is_processing_paused(self) else self.bt_hvac_mode
+            )
             _remapped_states = convert_outbound_states(
-                self, heater_entity_id, self.bt_hvac_mode
+                self, heater_entity_id, _control_mode
             )
             if not isinstance(_remapped_states, dict):
                 _LOGGER.warning(
@@ -1399,7 +1411,7 @@ async def control_trv(self, heater_entity_id=None):
             _new_hvac_mode = handle_contact_open(self, _remapped_states)
 
             # if we don't need to heat, we force HVACMode to be off
-            if self.call_for_heat is False:
+            if self.call_for_heat is False or is_processing_paused(self):
                 _new_hvac_mode = HVACMode.OFF
 
             # Optional: set valve position if supported (e.g., MQTT/Z2M)

@@ -30,6 +30,48 @@ or click on the button below:
 
 **Window Sensor** This is an optional field. If you have a window sensor you can use it to turn off the thermostat if the window is open and turn it on again when the window is closed. If you have more than one window in a room, you can also select window groups (see the GitHub page for more info).
 
+### Pause regulation
+
+**Pause regulation sensor** is optional and available during setup and in the
+integration options. Select a binary sensor, input boolean, or group. An `on`
+signal pauses regulation immediately; `off` resumes it. A missing, unknown, or
+unavailable configured signal keeps BT paused until it reports `off`.
+
+While paused, BT commands TRVs off, closes writable valves, and stops a configured
+cooler. TRVs without an off mode use their minimum setpoint, so their built-in
+frost protection can still operate. BT keeps your target temperature, preset,
+and selected HVAC mode. The `processing_paused` climate attribute reports the
+pause independently of that selected mode. Scheduled valve exercise is deferred.
+
+Pause also applies in cooling mode: the cooler is commanded off without changing
+its saved target or writing a new setpoint. When pause clears, cooling resumes
+only if the room reaches the cooling switch-on threshold. Reports of active
+cooling are excluded from passive heat-loss learning even before the cooler
+confirms shutdown; the normal settling period applies after it stops.
+
+Heating-power learning and calibration/controller calculations are suspended.
+Partial heating measurements are discarded at pause boundaries so a stopped pump
+does not distort heating-power estimates. Passive heat-loss learning continues
+while the room cools naturally, and its sample is preserved when regulation
+resumes. Open windows/doors and active cooling still invalidate passive heat-loss
+observations. Learned rates, model parameters, history, and tuned PID gains are
+retained.
+
+For a heat-pump circulation pump, invert its running signal using a template
+binary sensor, then select that sensor in **Pause regulation sensor**:
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Pause radiator regulation"
+        unique_id: pause_radiator_regulation
+        state: "{{ not is_state('binary_sensor.heatpump_pump_running', 'on') }}"
+```
+
+Alternatively, select an `input_boolean` helper and control it from automations.
+This feature is an operational interlock, not a physical isolation or safety
+device; commands still depend on the TRVs being reachable.
+
 ### Example window/door sensor config
 
 ```yaml

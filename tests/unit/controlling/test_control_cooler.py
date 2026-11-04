@@ -2,7 +2,7 @@
 
 import asyncio
 from time import monotonic
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.components.climate.const import ClimateEntityFeature, HVACMode
 from homeassistant.const import UnitOfTemperature
@@ -100,6 +100,92 @@ class TestControlCooler:
         assert calls[0].args[1] == "set_temperature"
         assert calls[1].args[1] == "set_hvac_mode"
         assert calls[1].args[2]["hvac_mode"] == HVACMode.OFF
+
+    @pytest.mark.asyncio
+    async def test_pause_signal_turns_cooler_off(self):
+        """An active pause signal stands the cooler down."""
+        mock_hass = Mock()
+        mock_hass.services = Mock()
+        mock_hass.services.async_call = AsyncMock()
+        mock_hass.states.get.return_value = _make_cooler_state(
+            state=HVACMode.COOL, temperature=24.0
+        )
+        mock_self = _make_mock_self(mock_hass)
+        mock_self.pause_sensor_entity_id = "binary_sensor.pause"
+
+        await control_cooler(mock_self)
+
+        calls = mock_hass.services.async_call.call_args_list
+        assert calls[-1].args[1] == "set_hvac_mode"
+        assert calls[-1].args[2]["hvac_mode"] == HVACMode.OFF
+
+    @pytest.mark.parametrize("room_mode", [HVACMode.COOL, HVACMode.HEAT_COOL])
+    @pytest.mark.parametrize("pause_state", ["on", "unknown", "unavailable"])
+    async def test_pause_stops_cooling_without_writing_setpoints(
+        self, hass, room_mode, pause_state
+    ):
+        hass.states.async_set("binary_sensor.pause", pause_state)
+        hass.states.async_set("climate.cooler", HVACMode.COOL, {"temperature": 23.0})
+        bt = _make_mock_self(
+            hass,
+            bt_hvac_mode=room_mode,
+            last_cooler_mode_decided=HVACMode.COOL,
+            last_sent_cooler_hvac_mode=HVACMode.COOL,
+            last_sent_cooler_hvac_mode_ts=monotonic(),
+            min_cooler_resend_interval_s=300,
+        )
+        bt.pause_sensor_entity_id = "binary_sensor.pause"
+        with patch.object(type(hass.services), "async_call", new=AsyncMock()) as send:
+            await control_cooler(bt)
+
+        send.assert_awaited_once_with(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": "climate.cooler", "hvac_mode": HVACMode.OFF},
+            blocking=True,
+            context=None,
+        )
+        assert bt.bt_hvac_mode == room_mode
+        assert bt.bt_target_cooltemp == 24.0
+        assert bt.bt_target_temp == 20.0
+        assert bt.last_cooler_mode_decided == HVACMode.OFF
+
+    @pytest.mark.parametrize("room_mode", [HVACMode.COOL, HVACMode.HEAT_COOL])
+    @pytest.mark.parametrize("room_temp", [24.2, 25.0])
+    async def test_pause_resume_restarts_cooling_only_above_switch_on_edge(
+        self, hass, room_mode, room_temp
+    ):
+        hass.states.async_set("binary_sensor.pause", "on")
+        hass.states.async_set("climate.cooler", HVACMode.COOL, {"temperature": 24.0})
+        bt = _make_mock_self(
+            hass,
+            bt_hvac_mode=room_mode,
+            cur_temp=room_temp,
+            last_cooler_mode_decided=HVACMode.COOL,
+        )
+        bt.pause_sensor_entity_id = "binary_sensor.pause"
+        with patch.object(type(hass.services), "async_call", new=AsyncMock()) as send:
+            await control_cooler(bt)
+            assert bt.last_cooler_mode_decided == HVACMode.OFF
+            send.reset_mock()
+            hass.states.async_set("climate.cooler", HVACMode.OFF, {"temperature": 24.0})
+            hass.states.async_set("binary_sensor.pause", "off")
+            await control_cooler(bt)
+
+        if room_temp >= 24.5:
+            assert bt.last_cooler_mode_decided == HVACMode.COOL
+            send.assert_awaited_once_with(
+                "climate",
+                "set_hvac_mode",
+                {"entity_id": "climate.cooler", "hvac_mode": HVACMode.COOL},
+                blocking=True,
+                context=None,
+            )
+        else:
+            assert bt.last_cooler_mode_decided == HVACMode.OFF
+            send.assert_not_awaited()
+        assert bt.bt_hvac_mode == room_mode
+        assert bt.bt_target_cooltemp == 24.0
 
     @pytest.mark.asyncio
     async def test_cooling_needed_above_target(self):
@@ -1593,6 +1679,28 @@ class TestControlCoolerOnADualRoleEntity:
     @classmethod
     def _make_device_state(cls, state, temperature):
         return State(cls.SHARED_ID, str(state), {"temperature": temperature})
+
+    async def test_pause_hands_shared_cooler_back_to_the_off_control_path(self):
+        mock_hass = self._hass()
+        device_state = self._make_device_state(HVACMode.COOL, 24.0)
+        mock_hass.states.get.side_effect = lambda entity_id: (
+            State("binary_sensor.pause", "on")
+            if entity_id == "binary_sensor.pause"
+            else device_state
+        )
+        bt = self._make_shared_self(
+            mock_hass,
+            bt_hvac_mode=HVACMode.HEAT_COOL,
+            last_cooler_mode_decided=HVACMode.COOL,
+        )
+        bt.pause_sensor_entity_id = "binary_sensor.pause"
+
+        await control_cooler(bt)
+
+        assert bt.last_cooler_mode_decided == HVACMode.OFF
+        assert not cooling_owns_dual_role_device(bt, self.SHARED_ID)
+        mock_hass.services.async_call.assert_not_awaited()
+        assert bt.bt_hvac_mode == HVACMode.HEAT_COOL
 
     @pytest.mark.asyncio
     async def test_shared_entity_writes_nothing_while_the_heating_channel_owns(self):

@@ -48,6 +48,7 @@ from custom_components.better_thermostat.utils.helpers import (
     dual_role_entity_id,
     get_device_model,
     group_all_members_off,
+    is_processing_paused,
     is_reasonable_temperature,
     mode_remap,
     normalize_step,
@@ -720,6 +721,7 @@ async def trigger_trv_change(
                     trv.withdrawn_hvac_mode_until = None
             if (
                 not child_lock
+                and not is_processing_paused(self)
                 and not _withdrawn_command_landed
                 and trv.system_mode_received is True
                 and trv.last_hvac_mode != _org_trv_state.state
@@ -822,7 +824,7 @@ async def trigger_trv_change(
             trv,
             is_echo=_is_echo,
             child_lock=child_lock,
-            contact_open=self.contact_open,
+            contact_open=self.contact_open or is_processing_paused(self),
             was_off=_was_off,
         )
         if _was_off and trv.hvac_mode != HVACMode.OFF and not _is_echo:
@@ -972,7 +974,7 @@ async def trigger_trv_change(
                 _step,
             )
 
-        if advanced.get("no_off_system_mode", False):
+        if advanced.get("no_off_system_mode", False) and not is_processing_paused(self):
             # The setpoint of a device without an off mode carries the room's
             # mode, so a report is a control change only where it moves it.
             _room_before = (self.bt_hvac_mode, self.bt_target_cooltemp)
@@ -1066,7 +1068,9 @@ def convert_outbound_states(self, entity_id, hvac_mode) -> dict | None:
         _calibration_type = advanced.get("calibration")
         _calibration_mode = advanced.get("calibration_mode")
 
-        if _calibration_type is None:
+        if is_processing_paused(self):
+            _new_heating_setpoint = regulation_target_for(self)
+        elif _calibration_type is None:
             _LOGGER.warning(
                 "better_thermostat %s: no calibration type found in device config, talking to the TRV using fallback mode",
                 self.device_name,

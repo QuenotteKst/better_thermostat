@@ -54,6 +54,7 @@ from .utils.const import (
     CONF_PROTECT_OVERHEATING,
     CONF_SENSOR,
     CONF_SENSOR_DOOR,
+    CONF_SENSOR_PAUSE,
     CONF_SENSOR_WINDOW,
     CONF_TARGET_TEMP_MAX,
     CONF_TARGET_TEMP_MIN,
@@ -667,6 +668,9 @@ def _build_user_fields(
     add_entity_selector(
         CONF_SENSOR_DOOR, domain=["group", "sensor", "input_boolean", "binary_sensor"]
     )
+    add_entity_selector(
+        CONF_SENSOR_PAUSE, domain=["group", "input_boolean", "binary_sensor"]
+    )
     add_entity_selector(CONF_WEATHER, domain="weather")
 
     for key in (
@@ -788,6 +792,7 @@ def _normalize_user_submission(
         CONF_SENSOR,
         CONF_SENSOR_WINDOW,
         CONF_SENSOR_DOOR,
+        CONF_SENSOR_PAUSE,
         CONF_HUMIDITY,
         CONF_OUTDOOR_SENSOR,
         CONF_WEATHER,

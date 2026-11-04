@@ -172,6 +172,13 @@ class MpcV2Controller:
         self._next_mpc_t_s: float = -1.0
         self._initialised: bool = False
 
+    def suspend(self) -> None:
+        """Re-seed observations next cycle without forgetting the learned disturbance."""
+        self._initialised = False
+        self._last_t_s = 0.0
+        self._last_u = 0.0
+        self._u_history.clear()
+
     def step(
         self,
         t_s: float,

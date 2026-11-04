@@ -190,6 +190,32 @@ class TestControlQueue:
         mock_self.calculate_heating_power.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_paused_cycle_skips_heating_learning_but_tracks_heat_loss(self):
+        """A pause blocks heating-power learning but retains passive heat loss."""
+        mock_self = Mock()
+        mock_self.device_name = "test_thermostat"
+        mock_self.in_maintenance = False
+        mock_self.ignore_states = False
+        mock_self.startup_running = False
+        mock_self.pause_sensor_entity_id = "binary_sensor.pause"
+        mock_self.hass.states.get.return_value.state = "on"
+        mock_self.calculate_heating_power = AsyncMock()
+        mock_self.calculate_heat_loss = AsyncMock()
+        mock_self.cooler_entity_id = None
+        mock_self.real_trvs = {}
+        mock_self.control_queue_task = asyncio.Queue()
+        await mock_self.control_queue_task.put(mock_self)
+
+        queue_task = asyncio.create_task(control_queue(mock_self))
+        await asyncio.sleep(0.05)
+        queue_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queue_task
+
+        mock_self.calculate_heating_power.assert_not_called()
+        mock_self.calculate_heat_loss.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_handles_calculate_heating_power_exception(self):
         """Test that exceptions from calculate_heating_power are caught."""
         mock_self = Mock()
