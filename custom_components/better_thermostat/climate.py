@@ -175,6 +175,7 @@ from .utils.const import (
     CONF_MODEL,
     CONF_OFF_TEMPERATURE,
     CONF_OUTDOOR_SENSOR,
+    CONF_PAUSE_SENSOR,
     CONF_PRESETS,
     CONF_TARGET_TEMP_MAX,
     CONF_TARGET_TEMP_MIN,
@@ -798,6 +799,7 @@ def _configured_bt_config(settings: BtSettings, unit: UnitOfTemperature) -> BtCo
             settings.get(CONF_WINDOW_OFF_DELAY_AFTER), name, CONF_WINDOW_OFF_DELAY_AFTER
         ),
         door_sensor_entity_id=settings.get(CONF_DOOR_SENSORS) or None,
+        pause_sensor_entity_id=settings.get(CONF_PAUSE_SENSOR) or None,
         door_open_delay_seconds=_configured_delay(
             settings.get(CONF_DOOR_OFF_DELAY), name, CONF_DOOR_OFF_DELAY
         ),
@@ -1105,6 +1107,20 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
     def availability_guard_entity_id(self) -> str | None:
         """Return the entity that says whether the TRVs have power."""
         return self.config.availability_guard_entity_id
+
+    @property
+    def pause_sensor_entity_id(self) -> str | None:
+        """Return the optional regulation pause signal."""
+        return self.config.pause_sensor_entity_id
+
+    @property
+    def regulation_paused(self) -> bool:
+        """Pause only while the configured signal explicitly reports on."""
+        entity_id = self.pause_sensor_entity_id
+        if entity_id is None:
+            return False
+        state = self.hass.states.get(entity_id)
+        return state is not None and state.state == "on"
 
     @property
     def availability_guard_grace_seconds(self) -> float:
@@ -1503,6 +1519,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # off at the end of the first control cycle after both have ended, so
         # no learning interval spans either.
         self.learning_held = False
+        self._maintenance_task: asyncio.Task[None] | None = None
         # Counts every change of the pause and of the release. A control cycle
         # ends the hold only if neither changed while it ran: a cycle whose
         # learners ran before the change has not held after it.
@@ -1709,6 +1726,14 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
                 or self.devices_released
                 or bool(self.released_trvs)
             )
+        if self.pause_sensor_entity_id is not None:
+            if self.regulation_paused:
+                self.learning_held = True
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, [self.pause_sensor_entity_id], self._trigger_pause_change
+                )
+            )
         # The window detection switch is set up after the thermostat, and
         # control must not run on the default before it restores.
         if self.has_contact_sensor and (
@@ -1772,6 +1797,31 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
                 # with.
                 advanced=_advanced.copy(),
             )
+            saved_valves = (
+                self._saved_state.attributes.get("pause_valve_restore", {})
+                if self._saved_state is not None
+                else {}
+            )
+            if (
+                self.pause_sensor_entity_id is not None
+                and not self.devices_released
+                and trv["trv"] not in self.released_trvs
+                and isinstance(saved_valves, dict)
+                and trv["trv"] in saved_valves
+            ):
+                saved_percent = saved_valves.get(trv["trv"])
+                if saved_percent is None:
+                    self.real_trvs[trv["trv"]].pause_valve_restore_captured = True
+                elif (
+                    isinstance(saved_percent, (int, float))
+                    and not isinstance(saved_percent, bool)
+                    and math.isfinite(saved_percent)
+                    and 0 <= saved_percent <= 100
+                ):
+                    self.real_trvs[trv["trv"]].pause_valve_restore_percent = float(
+                        saved_percent
+                    )
+                    self.real_trvs[trv["trv"]].pause_valve_restore_captured = True
             # The child lock the startup sends the TRV is the one its switch
             # restores to, so the device is not set to the option first.
             child_lock = restored_child_lock(
@@ -1859,6 +1909,8 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
                 )
                 state_mgr.forget_thermostats_except([*self.entity_ids, *moved_to])
                 self.state_loaded = True
+                if self.regulation_paused:
+                    state_mgr.suspend_regulation()
         self._hydrate_thermal_from_state()
 
         @callback
@@ -2209,6 +2261,28 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         notices: it checks the TRVs every minute.
         """
         await check_critical_entities(self)
+
+    @callback
+    def _trigger_pause_change(self, event: Event[EventStateChangedData]) -> None:
+        """Apply a change to the optional regulation interlock."""
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        was_paused = old_state is not None and old_state.state == "on"
+        paused = new_state is not None and new_state.state == "on"
+        if paused == was_paused:
+            return
+        self.learning_pause_changes += 1
+        self.learning_held = True
+        if paused:
+            self._heating_tracker.abort_cycle()
+            if self.state_loaded:
+                self.state_mgr.suspend_regulation()
+            if self._maintenance_task is not None:
+                self._maintenance_task.cancel()
+        self.attr_hvac_action = None
+        self.async_set_context(event.context)
+        request_control_cycle(self, replace_pending=paused)
+        self.async_write_ha_state()
 
     async def _trigger_cooler_change(self, event: Event[EventStateChangedData]) -> None:
         await check_and_update_degraded_mode(self)
@@ -4099,7 +4173,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             return
 
         # Run maintenance asynchronously (don't block the tick)
-        self._spawn_owned(
+        self._maintenance_task = self._spawn_owned(
             self._run_valve_maintenance(trvs_to_service),
             name=f"bt_valve_maintenance_{self.device_name}",
         )
@@ -4381,7 +4455,10 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             current_action,
             self.clock.utcnow(),
             window_open=self.contact_sensed_open,
-            learning_paused=self.learning_held,
+            learning_paused=(self.learning_held and not self.regulation_paused)
+            or self.learning_paused
+            or self.devices_released
+            or bool(self.released_trvs),
         )
 
         if result.cycle_result is not None:
@@ -4502,6 +4579,12 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             "offset_ordered_cool_target": getattr(
                 self, "_offset_ordered_cool_target", None
             ),
+            "regulation_paused": self.regulation_paused,
+            "pause_valve_restore": {
+                entity_id: trv.pause_valve_restore_percent
+                for entity_id, trv in self.real_trvs.items()
+                if trv.pause_valve_restore_captured
+            },
             ATTR_STATE_WINDOW_OPEN: self.window_open,
             ATTR_STATE_DOOR_OPEN: self.door_open,
             ATTR_STATE_CALL_FOR_HEAT: self.call_for_heat,
@@ -4806,7 +4889,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
             cool_target_temperature=self.cool_target_temperature,
             hvac_mode=self.hvac_mode,
             bt_hvac_mode=self.bt_hvac_mode,
-            window_open=self.contact_open,
+            window_open=self.contact_open or self.regulation_paused,
             tolerance=self.tolerance,
             cool_previously_active=self._cooler_previously_active(),
         )
@@ -5653,6 +5736,9 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # cycle that takes them back.
         for trv in self.real_trvs.values():
             trv.last_hvac_mode_sent = None
+            if released:
+                trv.pause_valve_restore_percent = None
+                trv.pause_valve_restore_captured = False
         self.learning_pause_changes += 1
         _LOGGER.info(
             "better_thermostat %s: devices %s",
@@ -5710,6 +5796,9 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # What the TRV was sent before its release is no repeat for the
         # cycle that takes it back.
         self.real_trvs[entity_id].last_hvac_mode_sent = None
+        if released:
+            self.real_trvs[entity_id].pause_valve_restore_percent = None
+            self.real_trvs[entity_id].pause_valve_restore_captured = False
         self.learning_pause_changes += 1
         _LOGGER.info(
             "better_thermostat %s: TRV %s %s",
@@ -5807,7 +5896,7 @@ class BetterThermostat(ClimateEntity, RestoresLastAvailableState):
         # unloading or removing the thermostat stops it, and it puts the TRVs
         # back on the way out. The call waits for it either way; a run the
         # removal stopped ends the call without an error.
-        run = self._spawn_owned(
+        run = self._maintenance_task = self._spawn_owned(
             self._run_valve_maintenance(trvs_to_service),
             name=f"bt_valve_maintenance_{self.device_name}",
         )
